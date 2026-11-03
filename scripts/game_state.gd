@@ -42,24 +42,28 @@ func _init_empty_board() -> void:
 
 func setup_initial_position(players: Dictionary) -> void:
 	_init_empty_board()
-	players_info = players.duplicate(true)
+	players_info.clear()
+	for k in players:
+		players_info[int(k)] = players[k]
 	frozen_players.clear()
 	move_history.clear()
 	game_in_progress = true
 
-	for pid in players:
-		var info = players[pid]
-		var slot: Slot = _slot_from_string(info.get("slot", "bottom_left"))
+	for pid in players_info:
+		var info = players_info[pid]
+		var slot: Slot = _slot_from_string(str(info.get("slot", "bottom_left")))
 		var color: Color = info.get("color", Color.WHITE)
-		_place_full_set(pid, slot, color)
+		_place_full_set(int(pid), slot, color)
 
 	var ordered := []
-	for pid in players:
-		ordered.append({"id": pid, "order": players[pid].get("turn_order", 99)})
+	for pid in players_info:
+		ordered.append({"id": int(pid), "order": int(players_info[pid].get("turn_order", 99))})
 	ordered.sort_custom(func(a, b): return a.order < b.order)
 	if ordered.size() > 0:
 		turn_player_id = ordered[0].id
 		current_turn_order = ordered[0].order
+	else:
+		turn_player_id = 0
 
 func _slot_from_string(s: String) -> Slot:
 	match s.to_lower():
@@ -106,25 +110,30 @@ func set_piece(x: int, y: int, piece: Variant) -> void:
 	board[x][y] = piece
 
 func is_frozen(peer_id: int) -> bool:
-	return frozen_players.get(peer_id, false)
+	return frozen_players.get(int(peer_id), false)
 
 func set_frozen(peer_id: int, frozen: bool) -> void:
+	var id = int(peer_id)
 	if frozen:
-		frozen_players[peer_id] = true
+		frozen_players[id] = true
 	else:
-		frozen_players.erase(peer_id)
+		frozen_players.erase(id)
 
 func next_turn() -> void:
 	var orders := []
 	for pid in players_info:
-		if not is_frozen(pid):
-			orders.append({"id": pid, "order": players_info[pid].get("turn_order", 99)})
+		var id = int(pid)
+		if not is_frozen(id):
+			orders.append({"id": id, "order": int(players_info[pid].get("turn_order", 99))})
 	if orders.is_empty():
+		# Solo / all frozen: stay on current if possible
+		if players_info.has(turn_player_id) or players_info.has(str(turn_player_id)):
+			return
 		return
 	orders.sort_custom(func(a, b): return a.order < b.order)
 	var idx := 0
 	for i in orders.size():
-		if orders[i].id == turn_player_id:
+		if orders[i].id == int(turn_player_id):
 			idx = i
 			break
 	var next_idx = (idx + 1) % orders.size()
@@ -132,8 +141,9 @@ func next_turn() -> void:
 	current_turn_order = orders[next_idx].order
 
 func get_player_slot(peer_id: int) -> Slot:
-	var s = players_info.get(peer_id, {}).get("slot", "bottom_left")
-	return _slot_from_string(s)
+	var id = int(peer_id)
+	var s = players_info.get(id, players_info.get(str(id), {})).get("slot", "bottom_left")
+	return _slot_from_string(str(s))
 
 func get_forward_dir(peer_id: int) -> int:
 	var slot = get_player_slot(peer_id)
@@ -149,7 +159,7 @@ func apply_move(from: Vector2i, to: Vector2i, promotion_type: int = -1) -> Dicti
 		"en_passant": false,
 		"promotion": false,
 	}
-	var owner_id: int = piece.owner
+	var owner_id: int = int(piece.owner)
 	var dir = get_forward_dir(owner_id)
 
 	if piece.type == PieceType.PAWN and to == en_passant_target:
@@ -168,7 +178,7 @@ func apply_move(from: Vector2i, to: Vector2i, promotion_type: int = -1) -> Dicti
 		for i in range(1, 5):
 			var cx = from.x + i * step
 			var p = get_piece(cx, from.y)
-			if p and p.type == PieceType.ROOK and p.owner == owner_id:
+			if p and p.type == PieceType.ROOK and int(p.owner) == owner_id:
 				rook_x = cx
 				break
 		if rook_x >= 0:
@@ -200,23 +210,24 @@ func apply_move(from: Vector2i, to: Vector2i, promotion_type: int = -1) -> Dicti
 	return result
 
 func get_team(peer_id: int) -> int:
-	return players_info.get(peer_id, {}).get("team", 0)
+	var id = int(peer_id)
+	return int(players_info.get(id, players_info.get(str(id), {})).get("team", 0))
 
 func all_opponents_frozen(my_team: int) -> bool:
 	var any_opponent := false
 	for pid in players_info:
-		var t = get_team(pid)
+		var t = get_team(int(pid))
 		if t != my_team:
 			any_opponent = true
-			if not is_frozen(pid):
+			if not is_frozen(int(pid)):
 				return false
 	return any_opponent
 
 func both_team_stalemated(team: int) -> bool:
 	var members := []
 	for pid in players_info:
-		if get_team(pid) == team:
-			members.append(pid)
+		if get_team(int(pid)) == team:
+			members.append(int(pid))
 	if members.is_empty():
 		return false
 	for pid in members:
@@ -224,7 +235,6 @@ func both_team_stalemated(team: int) -> bool:
 			return false
 	return true
 
-## Snapshot for reconnection (JSON-friendly)
 func serialize() -> Dictionary:
 	var cells: Array = []
 	for x in BOARD_WIDTH:
@@ -239,12 +249,15 @@ func serialize() -> Dictionary:
 				"color": p.color.to_html(true),
 				"has_moved": bool(p.get("has_moved", false)),
 			})
+	var pinfo := {}
+	for k in players_info:
+		pinfo[str(int(k))] = players_info[k]
 	return {
-		"turn_player_id": turn_player_id,
+		"turn_player_id": int(turn_player_id),
 		"current_turn_order": current_turn_order,
-		"frozen": frozen_players.keys(),
+		"frozen": frozen_players.keys().map(func(x): return int(x)),
 		"en_passant": [en_passant_target.x, en_passant_target.y],
-		"players_info": players_info,
+		"players_info": pinfo,
 		"cells": cells,
 		"draw_proposed_by_team": draw_proposed_by_team,
 		"draw_votes": draw_votes,
@@ -253,7 +266,10 @@ func serialize() -> Dictionary:
 
 func apply_snapshot(data: Dictionary) -> void:
 	_init_empty_board()
-	players_info = data.get("players_info", {}).duplicate(true)
+	players_info.clear()
+	var raw = data.get("players_info", {})
+	for k in raw:
+		players_info[int(k)] = raw[k]
 	turn_player_id = int(data.get("turn_player_id", 0))
 	current_turn_order = int(data.get("current_turn_order", 1))
 	frozen_players.clear()
