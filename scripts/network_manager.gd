@@ -1,5 +1,5 @@
 extends Node
-## NetworkManager — ENet host/client + reconnection + move sync + draw votes
+## NetworkManager — ENet + moves + draw + state snapshot for reconnect
 
 signal player_connected(peer_id: int, info: Dictionary)
 signal player_disconnected(peer_id: int)
@@ -12,6 +12,7 @@ signal chat_message_received(from_id: int, text: String, is_team: bool)
 signal move_received(from: Vector2i, to: Vector2i, sender_id: int, promotion: int)
 signal turn_changed(new_player_id: int)
 signal draw_state_changed(proposed_team: int, votes: Dictionary, accepted: bool)
+signal state_snapshot_received(data: Dictionary)
 
 const DEFAULT_PORT := 7777
 const MAX_PLAYERS := 4
@@ -20,7 +21,6 @@ const MAX_OBSERVERS := 32
 var peer: ENetMultiplayerPeer
 var is_host := false
 var my_peer_id := 0
-
 var players: Dictionary = {}
 var observers: Dictionary = {}
 
@@ -71,6 +71,8 @@ func _request_register(info: Dictionary) -> void:
 		return
 	var id := multiplayer.get_remote_sender_id()
 	_register_player_local(id, info)
+	if GameState.game_in_progress:
+		rpc_id(id, "_receive_state_snapshot", GameState.serialize())
 
 func _register_player_local(id: int, info: Dictionary) -> void:
 	if info.get("is_observer", false):
@@ -124,11 +126,8 @@ func _receive_chat(text: String, is_team: bool) -> void:
 		from_id = multiplayer.get_unique_id()
 	chat_message_received.emit(from_id, text, is_team)
 
-# ========== MOVE SYNC ==========
-
 func request_move(from: Vector2i, to: Vector2i, promotion: int = -1) -> void:
 	if multiplayer.multiplayer_peer == null:
-		# Offline
 		move_received.emit(from, to, my_peer_id if my_peer_id != 0 else 1, promotion)
 		return
 	if multiplayer.is_server():
@@ -140,8 +139,7 @@ func request_move(from: Vector2i, to: Vector2i, promotion: int = -1) -> void:
 func _server_receive_move(from: Vector2i, to: Vector2i, promotion: int = -1) -> void:
 	if not multiplayer.is_server():
 		return
-	var sender := multiplayer.get_remote_sender_id()
-	_validate_and_apply_move(sender, from, to, promotion)
+	_validate_and_apply_move(multiplayer.get_remote_sender_id(), from, to, promotion)
 
 func _validate_and_apply_move(sender_id: int, from: Vector2i, to: Vector2i, promotion: int) -> void:
 	if GameState.turn_player_id != sender_id:
@@ -155,9 +153,7 @@ func _validate_and_apply_move(sender_id: int, from: Vector2i, to: Vector2i, prom
 	if to not in legal:
 		return
 	if ChessLogic.is_promotion(GameState, from.x, from.y, to.x, to.y):
-		if promotion < 0:
-			promotion = GameState.PieceType.QUEEN
-		elif promotion not in [GameState.PieceType.QUEEN, GameState.PieceType.ROOK, GameState.PieceType.BISHOP, GameState.PieceType.KNIGHT]:
+		if promotion < 0 or promotion not in [GameState.PieceType.QUEEN, GameState.PieceType.ROOK, GameState.PieceType.BISHOP, GameState.PieceType.KNIGHT]:
 			promotion = GameState.PieceType.QUEEN
 	else:
 		promotion = -1
@@ -178,8 +174,6 @@ func notify_turn_changed(new_id: int) -> void:
 func _sync_turn(new_id: int) -> void:
 	turn_changed.emit(new_id)
 
-# ========== DRAW VOTE ==========
-
 func propose_or_vote_draw() -> void:
 	if multiplayer.multiplayer_peer == null or multiplayer.is_server():
 		_server_draw_vote(my_peer_id if my_peer_id != 0 else 1)
@@ -198,14 +192,14 @@ func _server_draw_vote(voter_id: int) -> void:
 		GameState.draw_proposed_by_team = team
 		GameState.draw_votes.clear()
 	GameState.draw_votes[voter_id] = true
-	var accepted = _all_players_voted()
-	rpc("_sync_draw", GameState.draw_proposed_by_team, GameState.draw_votes, accepted)
-
-func _all_players_voted() -> bool:
+	var accepted = true
 	for pid in players:
 		if not GameState.draw_votes.get(pid, false):
-			return false
-	return players.size() > 0
+			accepted = false
+			break
+	if players.is_empty():
+		accepted = false
+	rpc("_sync_draw", GameState.draw_proposed_by_team, GameState.draw_votes, accepted)
 
 @rpc("authority", "reliable", "call_local")
 func _sync_draw(proposed_team: int, votes: Dictionary, accepted: bool) -> void:
@@ -213,12 +207,22 @@ func _sync_draw(proposed_team: int, votes: Dictionary, accepted: bool) -> void:
 	GameState.draw_votes = votes
 	draw_state_changed.emit(proposed_team, votes, accepted)
 
-# ========== CONNECTION ==========
+@rpc("authority", "reliable")
+func _receive_state_snapshot(data: Dictionary) -> void:
+	GameState.apply_snapshot(data)
+	players = data.get("players_info", players)
+	state_snapshot_received.emit(data)
+	if data.get("game_in_progress", false):
+		# Ensure we are on game scene
+		if get_tree().current_scene == null or not str(get_tree().current_scene.scene_file_path).ends_with("game.tscn"):
+			get_tree().change_scene_to_file("res://scenes/game.tscn")
 
 func _on_peer_connected(id: int) -> void:
 	print("Peer connected: ", id)
 	if multiplayer.is_server():
 		rpc_id(id, "_sync_lobby", players, observers)
+		if GameState.game_in_progress:
+			rpc_id(id, "_receive_state_snapshot", GameState.serialize())
 
 func _on_peer_disconnected(id: int) -> void:
 	print("Peer disconnected: ", id)
@@ -238,8 +242,3 @@ func _on_connection_failed() -> void:
 func _on_server_disconnected() -> void:
 	server_disconnected.emit()
 	leave_game()
-
-func request_rejoin(old_info: Dictionary) -> void:
-	if multiplayer.is_server():
-		return
-	rpc_id(1, "_request_register", old_info)
