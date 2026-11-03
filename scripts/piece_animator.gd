@@ -1,5 +1,5 @@
 extends Node2D
-## Simple straight-line move animation for pieces.
+## Straight-line move animation with vector piece silhouette.
 
 signal animation_finished
 
@@ -10,11 +10,12 @@ var progress := 0.0
 var duration := 0.18
 var piece_data: Dictionary = {}
 var callback: Callable
+var piece_size := 64.0 * 0.78
 
 func start(from_cell: Vector2i, to_cell: Vector2i, piece: Dictionary, board_view: Node2D, on_finished: Callable = Callable()) -> void:
 	if animating:
 		return
-	set("animating", true)
+	animating = true
 	from_pos = board_view.pos_from_cell(from_cell)
 	to_pos = board_view.pos_from_cell(to_cell)
 	piece_data = piece.duplicate()
@@ -29,7 +30,7 @@ func _process(delta: float) -> void:
 	progress += delta / duration
 	if progress >= 1.0:
 		progress = 1.0
-		set("animating", false)
+		animating = false
 		hide()
 		animation_finished.emit()
 		if callback.is_valid():
@@ -42,7 +43,5 @@ func _draw() -> void:
 	var t = ease(progress, -1.5)
 	var pos = from_pos.lerp(to_pos, t)
 	var color: Color = piece_data.get("color", Color.WHITE)
-	var radius = 64.0 * 0.38
-	draw_circle(pos + Vector2(2, 3), radius, Color(0, 0, 0, 0.25))
-	draw_circle(pos, radius, color)
-	draw_arc(pos, radius, 0, TAU, 32, color.darkened(0.45), 3.5, true)
+	var ptype: int = int(piece_data.get("type", 0))
+	PieceDraw.draw_piece(self, pos, ptype, color, piece_size)
