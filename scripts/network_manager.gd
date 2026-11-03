@@ -32,19 +32,25 @@ func _ready() -> void:
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 
 func host_game(port: int = DEFAULT_PORT) -> Error:
+	leave_game()
 	peer = ENetMultiplayerPeer.new()
 	var err := peer.create_server(port, MAX_PLAYERS + MAX_OBSERVERS)
 	if err != OK:
+		push_error("create_server failed: %s (%d)" % [error_string(err), err])
 		return err
 	multiplayer.multiplayer_peer = peer
 	is_host = true
-	my_peer_id = 1
+	my_peer_id = multiplayer.get_unique_id()
+	if my_peer_id == 0:
+		my_peer_id = 1
 	return OK
 
 func join_game(ip: String, port: int = DEFAULT_PORT) -> Error:
+	leave_game()
 	peer = ENetMultiplayerPeer.new()
 	var err := peer.create_client(ip, port)
 	if err != OK:
+		push_error("create_client failed: %s (%d)" % [error_string(err), err])
 		return err
 	multiplayer.multiplayer_peer = peer
 	is_host = false
@@ -60,6 +66,8 @@ func leave_game() -> void:
 	observers.clear()
 
 func register_player(info: Dictionary) -> void:
+	if multiplayer.multiplayer_peer == null:
+		return
 	if multiplayer.is_server():
 		_register_player_local(multiplayer.get_unique_id(), info)
 	else:
@@ -80,17 +88,25 @@ func _register_player_local(id: int, info: Dictionary) -> void:
 		players.erase(id)
 	else:
 		observers.erase(id)
-		var slot: String = info.get("slot", "")
-		var order: int = info.get("turn_order", 0)
-		for pid in players.keys():
-			if pid == id:
-				continue
-			if players[pid].get("slot") == slot:
-				info["slot"] = players[id].get("slot", slot) if players.has(id) else "bottom_left"
-			if players[pid].get("turn_order") == order:
-				var old_order = players[pid]["turn_order"]
-				players[pid]["turn_order"] = order
-				info["turn_order"] = old_order
+		var slot: String = str(info.get("slot", ""))
+		var order: int = int(info.get("turn_order", 0))
+		if slot != "":
+			for pid in players.keys():
+				if pid == id:
+					continue
+				if str(players[pid].get("slot", "")) == slot:
+					# Slot taken by someone else — reject taking it
+					info["slot"] = str(players.get(id, {}).get("slot", ""))
+					break
+		if order > 0:
+			for pid in players.keys():
+				if pid == id:
+					continue
+				if int(players[pid].get("turn_order", 0)) == order:
+					var old_order = int(players[pid]["turn_order"])
+					players[pid]["turn_order"] = order
+					info["turn_order"] = old_order
+					break
 		players[id] = info
 	_broadcast_lobby()
 
@@ -107,8 +123,14 @@ func _sync_lobby(p: Dictionary, o: Dictionary) -> void:
 func start_game() -> void:
 	if not multiplayer.is_server():
 		return
-	if players.size() < 1:
+	# Only seated players (non-empty slot)
+	var seated := {}
+	for pid in players:
+		if str(players[pid].get("slot", "")) != "":
+			seated[pid] = players[pid]
+	if seated.is_empty():
 		return
+	players = seated
 	rpc("_on_game_start", players)
 
 @rpc("authority", "reliable", "call_local")
@@ -213,7 +235,6 @@ func _receive_state_snapshot(data: Dictionary) -> void:
 	players = data.get("players_info", players)
 	state_snapshot_received.emit(data)
 	if data.get("game_in_progress", false):
-		# Ensure we are on game scene
 		if get_tree().current_scene == null or not str(get_tree().current_scene.scene_file_path).ends_with("game.tscn"):
 			get_tree().change_scene_to_file("res://scenes/game.tscn")
 
