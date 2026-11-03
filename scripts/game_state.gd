@@ -21,10 +21,9 @@ var board: Array = []
 var players_info: Dictionary = {}
 var move_history: Array = []
 var en_passant_target: Vector2i = Vector2i(-1, -1)
-
-# Draw voting: peer_id -> true if accepted
 var draw_votes: Dictionary = {}
 var draw_proposed_by_team: int = -1
+var game_in_progress := false
 
 func _ready() -> void:
 	_init_empty_board()
@@ -46,6 +45,7 @@ func setup_initial_position(players: Dictionary) -> void:
 	players_info = players.duplicate(true)
 	frozen_players.clear()
 	move_history.clear()
+	game_in_progress = true
 
 	for pid in players:
 		var info = players[pid]
@@ -139,8 +139,6 @@ func get_forward_dir(peer_id: int) -> int:
 	var slot = get_player_slot(peer_id)
 	return SLOT_FORWARD.get(slot, -1)
 
-## Apply a validated move, handling castling, en passant, promotion.
-## promotion_type: PieceType or -1 to keep as is / ask later
 func apply_move(from: Vector2i, to: Vector2i, promotion_type: int = -1) -> Dictionary:
 	var piece = get_piece(from.x, from.y)
 	if piece == null:
@@ -154,7 +152,6 @@ func apply_move(from: Vector2i, to: Vector2i, promotion_type: int = -1) -> Dicti
 	var owner_id: int = piece.owner
 	var dir = get_forward_dir(owner_id)
 
-	# En passant capture
 	if piece.type == PieceType.PAWN and to == en_passant_target:
 		var cap_y = to.y - dir
 		set_piece(to.x, cap_y, null)
@@ -165,10 +162,8 @@ func apply_move(from: Vector2i, to: Vector2i, promotion_type: int = -1) -> Dicti
 	if captured_piece != null:
 		result.captured = true
 
-	# Castling: king moves 2 squares horizontally
 	if piece.type == PieceType.KING and abs(to.x - from.x) == 2 and to.y == from.y:
 		var step = 1 if to.x > from.x else -1
-		# Find rook in that direction on same rank
 		var rook_x = -1
 		for i in range(1, 5):
 			var cx = from.x + i * step
@@ -180,21 +175,18 @@ func apply_move(from: Vector2i, to: Vector2i, promotion_type: int = -1) -> Dicti
 			var rook = get_piece(rook_x, from.y)
 			set_piece(rook_x, from.y, null)
 			rook.has_moved = true
-			var new_rook_x = to.x - step  # rook lands next to king
+			var new_rook_x = to.x - step
 			set_piece(new_rook_x, from.y, rook)
 			result.castle = true
 
-	# Move piece
 	piece.has_moved = true
 	set_piece(to.x, to.y, piece)
 	set_piece(from.x, from.y, null)
 
-	# Update en passant target
 	en_passant_target = Vector2i(-1, -1)
 	if piece.type == PieceType.PAWN and abs(to.y - from.y) == 2:
 		en_passant_target = Vector2i(from.x, from.y + dir)
 
-	# Promotion
 	if piece.type == PieceType.PAWN:
 		var promote_rank = 7 if dir == 1 else 0
 		if to.y == promote_rank:
@@ -202,7 +194,7 @@ func apply_move(from: Vector2i, to: Vector2i, promotion_type: int = -1) -> Dicti
 			if promotion_type >= 0:
 				piece.type = promotion_type
 			else:
-				piece.type = PieceType.QUEEN  # default
+				piece.type = PieceType.QUEEN
 
 	move_history.append({"from": from, "to": to, "result": result})
 	return result
@@ -231,3 +223,52 @@ func both_team_stalemated(team: int) -> bool:
 		if not is_frozen(pid):
 			return false
 	return true
+
+## Snapshot for reconnection (JSON-friendly)
+func serialize() -> Dictionary:
+	var cells: Array = []
+	for x in BOARD_WIDTH:
+		for y in BOARD_HEIGHT:
+			var p = board[x][y]
+			if p == null:
+				continue
+			cells.append({
+				"x": x, "y": y,
+				"type": int(p.type),
+				"owner": int(p.owner),
+				"color": p.color.to_html(true),
+				"has_moved": bool(p.get("has_moved", false)),
+			})
+	return {
+		"turn_player_id": turn_player_id,
+		"current_turn_order": current_turn_order,
+		"frozen": frozen_players.keys(),
+		"en_passant": [en_passant_target.x, en_passant_target.y],
+		"players_info": players_info,
+		"cells": cells,
+		"draw_proposed_by_team": draw_proposed_by_team,
+		"draw_votes": draw_votes,
+		"game_in_progress": game_in_progress,
+	}
+
+func apply_snapshot(data: Dictionary) -> void:
+	_init_empty_board()
+	players_info = data.get("players_info", {}).duplicate(true)
+	turn_player_id = int(data.get("turn_player_id", 0))
+	current_turn_order = int(data.get("current_turn_order", 1))
+	frozen_players.clear()
+	for pid in data.get("frozen", []):
+		frozen_players[int(pid)] = true
+	var ep = data.get("en_passant", [-1, -1])
+	en_passant_target = Vector2i(int(ep[0]), int(ep[1]))
+	draw_proposed_by_team = int(data.get("draw_proposed_by_team", -1))
+	draw_votes = data.get("draw_votes", {}).duplicate(true)
+	game_in_progress = bool(data.get("game_in_progress", false))
+	for c in data.get("cells", []):
+		var col = Color.html(str(c.get("color", "#ffffff")))
+		board[int(c.x)][int(c.y)] = {
+			"type": int(c.type),
+			"owner": int(c.owner),
+			"color": col,
+			"has_moved": bool(c.get("has_moved", false)),
+		}
