@@ -31,6 +31,12 @@ func _ready() -> void:
 	multiplayer.connection_failed.connect(_on_connection_failed)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 
+func _norm_dict(d: Dictionary) -> Dictionary:
+	var out := {}
+	for k in d:
+		out[int(k)] = d[k]
+	return out
+
 func host_game(port: int = DEFAULT_PORT) -> Error:
 	leave_game()
 	peer = ENetMultiplayerPeer.new()
@@ -83,6 +89,7 @@ func _request_register(info: Dictionary) -> void:
 		rpc_id(id, "_receive_state_snapshot", GameState.serialize())
 
 func _register_player_local(id: int, info: Dictionary) -> void:
+	id = int(id)
 	if info.get("is_observer", false):
 		observers[id] = info
 		players.erase(id)
@@ -92,15 +99,14 @@ func _register_player_local(id: int, info: Dictionary) -> void:
 		var order: int = int(info.get("turn_order", 0))
 		if slot != "":
 			for pid in players.keys():
-				if pid == id:
+				if int(pid) == id:
 					continue
 				if str(players[pid].get("slot", "")) == slot:
-					# Slot taken by someone else — reject taking it
 					info["slot"] = str(players.get(id, {}).get("slot", ""))
 					break
 		if order > 0:
 			for pid in players.keys():
-				if pid == id:
+				if int(pid) == id:
 					continue
 				if int(players[pid].get("turn_order", 0)) == order:
 					var old_order = int(players[pid]["turn_order"])
@@ -116,26 +122,26 @@ func _broadcast_lobby() -> void:
 
 @rpc("authority", "reliable", "call_local")
 func _sync_lobby(p: Dictionary, o: Dictionary) -> void:
-	players = p
-	observers = o
+	players = _norm_dict(p)
+	observers = _norm_dict(o)
 	lobby_updated.emit()
 
 func start_game() -> void:
 	if not multiplayer.is_server():
 		return
-	# Only seated players (non-empty slot)
 	var seated := {}
 	for pid in players:
 		if str(players[pid].get("slot", "")) != "":
-			seated[pid] = players[pid]
+			seated[int(pid)] = players[pid]
 	if seated.is_empty():
+		push_warning("start_game: no seated players")
 		return
 	players = seated
 	rpc("_on_game_start", players)
 
 @rpc("authority", "reliable", "call_local")
 func _on_game_start(p: Dictionary) -> void:
-	players = p
+	players = _norm_dict(p)
 	game_started.emit()
 
 func send_chat(text: String, is_team: bool) -> void:
@@ -146,7 +152,7 @@ func _receive_chat(text: String, is_team: bool) -> void:
 	var from_id := multiplayer.get_remote_sender_id()
 	if from_id == 0:
 		from_id = multiplayer.get_unique_id()
-	chat_message_received.emit(from_id, text, is_team)
+	chat_message_received.emit(int(from_id), text, is_team)
 
 func request_move(from: Vector2i, to: Vector2i, promotion: int = -1) -> void:
 	if multiplayer.multiplayer_peer == null:
@@ -164,12 +170,13 @@ func _server_receive_move(from: Vector2i, to: Vector2i, promotion: int = -1) -> 
 	_validate_and_apply_move(multiplayer.get_remote_sender_id(), from, to, promotion)
 
 func _validate_and_apply_move(sender_id: int, from: Vector2i, to: Vector2i, promotion: int) -> void:
-	if GameState.turn_player_id != sender_id:
+	sender_id = int(sender_id)
+	if int(GameState.turn_player_id) != sender_id:
 		return
 	if GameState.is_frozen(sender_id):
 		return
 	var piece = GameState.get_piece(from.x, from.y)
-	if piece == null or piece.owner != sender_id:
+	if piece == null or int(piece.owner) != sender_id:
 		return
 	var legal = ChessLogic.get_possible_moves(GameState, from.x, from.y)
 	if to not in legal:
@@ -183,18 +190,18 @@ func _validate_and_apply_move(sender_id: int, from: Vector2i, to: Vector2i, prom
 
 @rpc("authority", "reliable", "call_local")
 func _apply_move(from: Vector2i, to: Vector2i, sender_id: int, promotion: int = -1) -> void:
-	move_received.emit(from, to, sender_id, promotion)
+	move_received.emit(from, to, int(sender_id), promotion)
 
 func notify_turn_changed(new_id: int) -> void:
 	if multiplayer.multiplayer_peer == null:
-		turn_changed.emit(new_id)
+		turn_changed.emit(int(new_id))
 		return
 	if multiplayer.is_server():
-		rpc("_sync_turn", new_id)
+		rpc("_sync_turn", int(new_id))
 
 @rpc("authority", "reliable", "call_local")
 func _sync_turn(new_id: int) -> void:
-	turn_changed.emit(new_id)
+	turn_changed.emit(int(new_id))
 
 func propose_or_vote_draw() -> void:
 	if multiplayer.multiplayer_peer == null or multiplayer.is_server():
@@ -209,6 +216,7 @@ func _server_receive_draw_vote() -> void:
 	_server_draw_vote(multiplayer.get_remote_sender_id())
 
 func _server_draw_vote(voter_id: int) -> void:
+	voter_id = int(voter_id)
 	var team = GameState.get_team(voter_id)
 	if GameState.draw_proposed_by_team < 0:
 		GameState.draw_proposed_by_team = team
@@ -216,7 +224,7 @@ func _server_draw_vote(voter_id: int) -> void:
 	GameState.draw_votes[voter_id] = true
 	var accepted = true
 	for pid in players:
-		if not GameState.draw_votes.get(pid, false):
+		if not GameState.draw_votes.get(int(pid), false):
 			accepted = false
 			break
 	if players.is_empty():
@@ -232,7 +240,7 @@ func _sync_draw(proposed_team: int, votes: Dictionary, accepted: bool) -> void:
 @rpc("authority", "reliable")
 func _receive_state_snapshot(data: Dictionary) -> void:
 	GameState.apply_snapshot(data)
-	players = data.get("players_info", players)
+	players = _norm_dict(data.get("players_info", players))
 	state_snapshot_received.emit(data)
 	if data.get("game_in_progress", false):
 		if get_tree().current_scene == null or not str(get_tree().current_scene.scene_file_path).ends_with("game.tscn"):
@@ -247,10 +255,10 @@ func _on_peer_connected(id: int) -> void:
 
 func _on_peer_disconnected(id: int) -> void:
 	print("Peer disconnected: ", id)
-	players.erase(id)
-	observers.erase(id)
+	players.erase(int(id))
+	observers.erase(int(id))
 	_broadcast_lobby()
-	player_disconnected.emit(id)
+	player_disconnected.emit(int(id))
 
 func _on_connected_to_server() -> void:
 	my_peer_id = multiplayer.get_unique_id()
