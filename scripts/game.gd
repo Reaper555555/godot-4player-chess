@@ -1,5 +1,5 @@
 extends Node2D
-## Main game controller: input, moves, animation, turn flow, badges, chat, draw
+## Main game controller
 
 @onready var board_view: Node2D = $BoardView
 @onready var turn_label: Label = $UI/TurnLabel
@@ -13,9 +13,13 @@ extends Node2D
 
 var selected: Vector2i = Vector2i(-1, -1)
 var is_animating := false
+var waiting_promotion := false
+var pending_from: Vector2i
+var pending_to: Vector2i
 var animator: Node2D
 var draw_btn: Button
 var status_label: Label
+var badge_nodes: Dictionary = {}  # peer_id -> PanelContainer
 
 func _ready() -> void:
 	animator = Node2D.new()
@@ -38,16 +42,17 @@ func _ready() -> void:
 	NetworkManager.chat_message_received.connect(_on_chat)
 	NetworkManager.move_received.connect(_on_move_received)
 	NetworkManager.turn_changed.connect(_on_turn_changed)
+	NetworkManager.draw_state_changed.connect(_on_draw_state)
 	chat_input.text_submitted.connect(_on_chat_submit)
 	back_btn.pressed.connect(_on_back)
 	fullscreen_btn.pressed.connect(_on_fullscreen)
 	lang_btn.pressed.connect(_on_lang)
 
-	_add_draw_ui()
+	_add_extra_ui()
 	_update_turn_ui()
 	_create_badges()
 
-func _add_draw_ui() -> void:
+func _add_extra_ui() -> void:
 	draw_btn = Button.new()
 	draw_btn.text = "Предложить ничью"
 	draw_btn.position = Vector2(420, 620)
@@ -59,7 +64,7 @@ func _add_draw_ui() -> void:
 	$UI.add_child(status_label)
 
 func _unhandled_input(event: InputEvent) -> void:
-	if is_animating:
+	if is_animating or waiting_promotion:
 		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		var cell = board_view.cell_from_pos(get_global_mouse_position())
@@ -79,49 +84,64 @@ func _on_cell_clicked(cell: Vector2i) -> void:
 	var piece = GameState.get_piece(cell.x, cell.y)
 	if selected.x >= 0:
 		if cell in board_view.possible_moves:
-			NetworkManager.request_move(selected, cell)
+			var from = selected
 			selected = Vector2i(-1, -1)
 			board_view.clear_selection()
+			if ChessLogic.is_promotion(GameState, from.x, from.y, cell.x, cell.y):
+				waiting_promotion = true
+				pending_from = from
+				pending_to = cell
+				_show_promotion_popup()
+			else:
+				NetworkManager.request_move(from, cell, -1)
 			return
 		else:
 			board_view.clear_selection()
 			selected = Vector2i(-1, -1)
-
-if piece and piece.owner == my_id:
+	if piece and piece.owner == my_id:
 		selected = cell
 		var moves = ChessLogic.get_possible_moves(GameState, cell.x, cell.y)
 		board_view.set_selection(cell, moves)
 		AudioManager.play("select")
 
-func _on_move_received(from: Vector2i, to: Vector2i, _sender_id: int) -> void:
+func _show_promotion_popup() -> void:
+	var popup = load("res://scripts/promotion_popup.gd").new()
+	# promotion_popup is a script extending CanvasLayer — instantiate via script
+	var node = CanvasLayer.new()
+	node.set_script(load("res://scripts/promotion_popup.gd"))
+	add_child(node)
+	node.chosen.connect(_on_promotion_chosen)
+
+func _on_promotion_chosen(piece_type: int) -> void:
+	waiting_promotion = false
+	NetworkManager.request_move(pending_from, pending_to, piece_type)
+
+func _on_move_received(from: Vector2i, to: Vector2i, _sender_id: int, promotion: int = -1) -> void:
 	var piece = GameState.get_piece(from.x, from.y)
 	if piece == null:
 		return
-	# Snapshot for animation
 	var piece_copy = piece.duplicate()
-	# Temporarily clear source for visual
 	GameState.set_piece(from.x, from.y, null)
 	board_view.refresh()
 
 	is_animating = true
 	animator.start(from, to, piece_copy, board_view, func():
-		_finish_move(from, to, piece_copy)
+		_finish_move(from, to, piece_copy, promotion)
 	)
 
-func _finish_move(from: Vector2i, to: Vector2i, piece: Dictionary) -> void:
-	# Restore piece at from so apply_move can work correctly
+func _finish_move(from: Vector2i, to: Vector2i, piece: Dictionary, promotion: int) -> void:
 	GameState.set_piece(from.x, from.y, piece)
-	var result = GameState.apply_move(from, to)  # auto-queen on promotion
+	var result = GameState.apply_move(from, to, promotion)
 	board_view.set_last_move(from, to)
 	board_view.refresh()
 	AudioManager.play_move(result.get("captured", false))
 	is_animating = false
 
 	if result.get("promotion", false):
-		status_label.text = "Пешка превратилась в ферзя"
-	if result.get("castle", false):
+		status_label.text = "Превращение!"
+	elif result.get("castle", false):
 		status_label.text = "Рокировка"
-	if result.get("en_passant", false):
+	elif result.get("en_passant", false):
 		status_label.text = "Взятие на проходе"
 
 	_check_game_state_after_move(piece.owner)
@@ -150,7 +170,7 @@ func _check_game_state_after_move(mover_id: int) -> void:
 		status_label.text = "Победа команды %d!" % team
 		draw_btn.disabled = true
 	if GameState.both_team_stalemated(team):
-		status_label.text = "Ничья (пат обеих сторон команды)"
+		status_label.text = "Ничья (пат команды)"
 
 func _on_turn_changed(new_id: int) -> void:
 	GameState.turn_player_id = new_id
@@ -164,10 +184,27 @@ func _update_turn_ui() -> void:
 	var color: Color = info.get("color", Color.WHITE)
 	turn_label.text = "Ход: %s%s" % [name, " (заморожен)" if frozen else ""]
 	turn_label.add_theme_color_override("font_color", color)
+	_highlight_current_badge(pid)
+
+func _highlight_current_badge(current_id: int) -> void:
+	for pid in badge_nodes:
+		var panel: PanelContainer = badge_nodes[pid]
+		var style: StyleBoxFlat = panel.get_theme_stylebox("panel").duplicate()
+		if pid == current_id:
+			style.border_color = Color(1.0, 0.9, 0.2)
+			style.set_border_width_all(3)
+			style.bg_color = Color(0.2, 0.18, 0.05, 0.92)
+		else:
+			var info = GameState.players_info.get(pid, {})
+			style.border_color = info.get("color", Color.WHITE)
+			style.set_border_width_all(2)
+			style.bg_color = Color(0.1, 0.1, 0.14, 0.85)
+		panel.add_theme_stylebox_override("panel", style)
 
 func _create_badges() -> void:
 	for c in badges_container.get_children():
 		c.queue_free()
+	badge_nodes.clear()
 	var positions = {
 		"top_left": Vector2(20, 8),
 		"bottom_left": Vector2(20, 580),
@@ -194,33 +231,20 @@ func _create_badges() -> void:
 		badge.add_child(label)
 		badge.position = positions.get(slot, Vector2(20, 20))
 		badges_container.add_child(badge)
+		badge_nodes[pid] = badge
+	_highlight_current_badge(GameState.turn_player_id)
 
 func _on_draw_offer() -> void:
-	var my_id = NetworkManager.my_peer_id
-	var my_team = GameState.get_team(my_id)
-	if GameState.draw_proposed_by_team < 0:
-		GameState.draw_proposed_by_team = my_team
-		GameState.draw_votes.clear()
-		GameState.draw_votes[my_id] = true
-		status_label.text = "Предложена ничья (команда %d). Ожидание..." % my_team
-		# Notify others via chat for now
-		NetworkManager.send_chat("Предлагает ничью", false)
-	else:
-		# Vote
-		GameState.draw_votes[my_id] = true
-		_check_draw_accepted()
+	NetworkManager.propose_or_vote_draw()
 
-func _check_draw_accepted() -> void:
-	# All players of both teams must accept (simplified: all non-observer players)
-	var needed := []
-	for pid in GameState.players_info:
-		needed.append(pid)
-	for pid in needed:
-		if not GameState.draw_votes.get(pid, false):
-			status_label.text = "Голоса за ничью: %d/%d" % [GameState.draw_votes.size(), needed.size()]
-			return
-	status_label.text = "Ничья по согласию!"
-	draw_btn.disabled = true
+func _on_draw_state(proposed_team: int, votes: Dictionary, accepted: bool) -> void:
+	if accepted:
+		status_label.text = "Ничья по согласию!"
+		draw_btn.disabled = true
+	else:
+		status_label.text = "Ничья (команда %d): голоса %d/%d" % [
+			proposed_team, votes.size(), NetworkManager.players.size()
+		]
 
 func _on_chat(from_id: int, text: String, is_team: bool) -> void:
 	var info = GameState.players_info.get(from_id, NetworkManager.observers.get(from_id, {}))
