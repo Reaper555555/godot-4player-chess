@@ -1,6 +1,7 @@
 extends Node
-## Simple audio manager. Place .ogg / .wav files in res://assets/sounds/
-## Expected names: move.ogg, capture.ogg, check.ogg, checkmate.ogg, select.ogg, ui_click.ogg
+## Audio manager. Looks for .ogg then .wav in res://assets/sounds/
+## Names: move, capture, check, checkmate, select, ui_click
+## Generate with: python3 tools/generate_sounds.py
 
 var players: Dictionary = {}
 
@@ -10,22 +11,21 @@ func _ready() -> void:
 func _load_sounds() -> void:
 	var names := ["move", "capture", "check", "checkmate", "select", "ui_click"]
 	for n in names:
-		var path = "res://assets/sounds/%s.ogg" % n
-		if ResourceLoader.exists(path):
-			var stream = load(path)
-			var p = AudioStreamPlayer.new()
+		var stream = null
+		for ext in ["ogg", "wav"]:
+			var path = "res://assets/sounds/%s.%s" % [n, ext]
+			if ResourceLoader.exists(path):
+				stream = load(path)
+				break
+		var p = AudioStreamPlayer.new()
+		if stream:
 			p.stream = stream
-			p.bus = "Master"
-			add_child(p)
-			players[n] = p
-		else:
-			# Placeholder silent player so code doesn't crash
-			var p = AudioStreamPlayer.new()
-			add_child(p)
-			players[n] = p
+		p.bus = "Master"
+		add_child(p)
+		players[n] = p
 
 func play(name: String) -> void:
-	if players.has(name):
+	if players.has(name) and players[name].stream:
 		players[name].play()
 
 func play_move(is_capture: bool = false) -> void:
