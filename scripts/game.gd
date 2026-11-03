@@ -28,14 +28,16 @@ func _ready() -> void:
 	animator.hide()
 
 	if not GameState.game_in_progress:
-		var players = NetworkManager.players.duplicate(true)
+		var players = _normalize_players(NetworkManager.players.duplicate(true))
 		if players.is_empty():
+			# Offline debug fallback (2 fake players)
 			players = {
 				1: {"name": "Host", "color": Color(0.9, 0.25, 0.25), "team": 1, "turn_order": 1, "slot": "bottom_left", "is_observer": false},
 				2: {"name": "P2", "color": Color(0.25, 0.45, 0.9), "team": 2, "turn_order": 2, "slot": "top_left", "is_observer": false},
 			}
 			NetworkManager.players = players
 			NetworkManager.my_peer_id = 1
+		NetworkManager.players = players
 		GameState.setup_initial_position(players)
 
 	board_view.refresh()
@@ -53,6 +55,19 @@ func _ready() -> void:
 	_add_extra_ui()
 	_update_turn_ui()
 	_create_badges()
+
+func _normalize_players(src: Dictionary) -> Dictionary:
+	var out := {}
+	for k in src:
+		out[int(k)] = src[k]
+	return out
+
+func _my_id() -> int:
+	var id = NetworkManager.my_peer_id
+	if id == 0:
+		id = multiplayer.get_unique_id() if multiplayer.multiplayer_peer else 1
+		NetworkManager.my_peer_id = id
+	return int(id)
 
 func _on_snapshot(_data: Dictionary) -> void:
 	board_view.refresh()
@@ -81,12 +96,12 @@ func _unhandled_input(event: InputEvent) -> void:
 func _on_cell_clicked(cell: Vector2i) -> void:
 	if cell.x < 0:
 		return
-	var my_id = NetworkManager.my_peer_id
-	if NetworkManager.observers.has(my_id):
+	var my_id := _my_id()
+	if NetworkManager.observers.has(my_id) or NetworkManager.observers.has(str(my_id)):
 		return
 	if GameState.is_frozen(my_id):
 		return
-	if GameState.turn_player_id != my_id:
+	if int(GameState.turn_player_id) != my_id:
 		return
 	var piece = GameState.get_piece(cell.x, cell.y)
 	if selected.x >= 0:
@@ -105,7 +120,7 @@ func _on_cell_clicked(cell: Vector2i) -> void:
 		else:
 			board_view.clear_selection()
 			selected = Vector2i(-1, -1)
-	if piece and piece.owner == my_id:
+	if piece and int(piece.owner) == my_id:
 		selected = cell
 		var moves = ChessLogic.get_possible_moves(GameState, cell.x, cell.y)
 		board_view.set_selection(cell, moves)
@@ -129,9 +144,15 @@ func _on_move_received(from: Vector2i, to: Vector2i, _sender_id: int, promotion:
 	GameState.set_piece(from.x, from.y, null)
 	board_view.refresh()
 	is_animating = true
-	animator.start(from, to, piece_copy, board_view, func():
+	if animator.has_method("start"):
+		animator.start(from, to, piece_copy, board_view, func():
+			_finish_move(from, to, piece_copy, promotion)
+		)
+	elif animator.has_method("animate_move"):
+		# fallback older API
 		_finish_move(from, to, piece_copy, promotion)
-	)
+	else:
+		_finish_move(from, to, piece_copy, promotion)
 
 func _finish_move(from: Vector2i, to: Vector2i, piece: Dictionary, promotion: int) -> void:
 	GameState.set_piece(from.x, from.y, piece)
@@ -146,7 +167,7 @@ func _finish_move(from: Vector2i, to: Vector2i, piece: Dictionary, promotion: in
 		status_label.text = "Рокировка / Castling"
 	elif result.get("en_passant", false):
 		status_label.text = "En passant"
-	_check_game_state_after_move(piece.owner)
+	_check_game_state_after_move(int(piece.owner))
 	GameState.next_turn()
 	if NetworkManager.is_host or multiplayer.multiplayer_peer == null:
 		NetworkManager.notify_turn_changed(GameState.turn_player_id)
@@ -154,16 +175,17 @@ func _finish_move(from: Vector2i, to: Vector2i, piece: Dictionary, promotion: in
 
 func _check_game_state_after_move(mover_id: int) -> void:
 	for pid in GameState.players_info:
-		if GameState.is_frozen(pid):
+		var id = int(pid)
+		if GameState.is_frozen(id):
 			continue
-		if ChessLogic.is_checkmate(GameState, pid):
-			GameState.set_frozen(pid, true)
+		if ChessLogic.is_checkmate(GameState, id):
+			GameState.set_frozen(id, true)
 			AudioManager.play_checkmate()
 			status_label.text = LocaleManager.t("mate")
-		elif ChessLogic.is_stalemate(GameState, pid):
-			GameState.set_frozen(pid, true)
+		elif ChessLogic.is_stalemate(GameState, id):
+			GameState.set_frozen(id, true)
 			status_label.text = LocaleManager.t("stalemate")
-		elif ChessLogic.is_in_check(GameState, pid):
+		elif ChessLogic.is_in_check(GameState, id):
 			AudioManager.play_check()
 			status_label.text = LocaleManager.t("check")
 	var team = GameState.get_team(mover_id)
@@ -174,12 +196,12 @@ func _check_game_state_after_move(mover_id: int) -> void:
 		status_label.text = LocaleManager.t("draw_accepted")
 
 func _on_turn_changed(new_id: int) -> void:
-	GameState.turn_player_id = new_id
+	GameState.turn_player_id = int(new_id)
 	_update_turn_ui()
 
 func _update_turn_ui() -> void:
-	var pid = GameState.turn_player_id
-	var info = GameState.players_info.get(pid, {})
+	var pid = int(GameState.turn_player_id)
+	var info = GameState.players_info.get(pid, GameState.players_info.get(str(pid), {}))
 	var name = info.get("name", "?")
 	var frozen = GameState.is_frozen(pid)
 	var color: Color = info.get("color", Color.WHITE)
@@ -192,12 +214,12 @@ func _highlight_current_badge(current_id: int) -> void:
 	for pid in badge_nodes:
 		var panel: PanelContainer = badge_nodes[pid]
 		var style: StyleBoxFlat = panel.get_theme_stylebox("panel").duplicate()
-		if pid == current_id:
+		if int(pid) == int(current_id):
 			style.border_color = Color(1.0, 0.9, 0.2)
 			style.set_border_width_all(3)
 			style.bg_color = Color(0.2, 0.18, 0.05, 0.92)
 		else:
-			var info = GameState.players_info.get(pid, {})
+			var info = GameState.players_info.get(int(pid), {})
 			style.border_color = info.get("color", Color.WHITE)
 			style.set_border_width_all(2)
 			style.bg_color = Color(0.1, 0.1, 0.14, 0.85)
@@ -214,6 +236,7 @@ func _create_badges() -> void:
 		"bottom_right": Vector2(900, 580),
 	}
 	for pid in GameState.players_info:
+		var id = int(pid)
 		var info = GameState.players_info[pid]
 		var slot = info.get("slot", "bottom_left")
 		var badge = PanelContainer.new()
@@ -233,8 +256,8 @@ func _create_badges() -> void:
 		badge.add_child(label)
 		badge.position = positions.get(slot, Vector2(20, 20))
 		badges_container.add_child(badge)
-		badge_nodes[pid] = badge
-	_highlight_current_badge(GameState.turn_player_id)
+		badge_nodes[id] = badge
+	_highlight_current_badge(int(GameState.turn_player_id))
 
 func _on_draw_offer() -> void:
 	NetworkManager.propose_or_vote_draw()
@@ -247,7 +270,7 @@ func _on_draw_state(proposed_team: int, votes: Dictionary, accepted: bool) -> vo
 		status_label.text = "Draw T%d: %d/%d" % [proposed_team, votes.size(), NetworkManager.players.size()]
 
 func _on_chat(from_id: int, text: String, is_team: bool) -> void:
-	var info = GameState.players_info.get(from_id, NetworkManager.observers.get(from_id, {}))
+	var info = GameState.players_info.get(int(from_id), NetworkManager.observers.get(int(from_id), {}))
 	var name = info.get("name", "?")
 	var color: Color = info.get("color", Color.WHITE)
 	var prefix = "[T] " if is_team else ""
