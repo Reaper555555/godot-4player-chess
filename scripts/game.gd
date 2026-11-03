@@ -19,7 +19,7 @@ var pending_to: Vector2i
 var animator: Node2D
 var draw_btn: Button
 var status_label: Label
-var badge_nodes: Dictionary = {}  # peer_id -> PanelContainer
+var badge_nodes: Dictionary = {}
 
 func _ready() -> void:
 	animator = Node2D.new()
@@ -27,22 +27,24 @@ func _ready() -> void:
 	add_child(animator)
 	animator.hide()
 
-	var players = NetworkManager.players.duplicate(true)
-	if players.is_empty():
-		players = {
-			1: {"name": "Host", "color": Color(0.9, 0.25, 0.25), "team": 1, "turn_order": 1, "slot": "bottom_left", "is_observer": false},
-			2: {"name": "P2", "color": Color(0.25, 0.45, 0.9), "team": 2, "turn_order": 2, "slot": "top_left", "is_observer": false},
-		}
-		NetworkManager.players = players
-		NetworkManager.my_peer_id = 1
+	if not GameState.game_in_progress:
+		var players = NetworkManager.players.duplicate(true)
+		if players.is_empty():
+			players = {
+				1: {"name": "Host", "color": Color(0.9, 0.25, 0.25), "team": 1, "turn_order": 1, "slot": "bottom_left", "is_observer": false},
+				2: {"name": "P2", "color": Color(0.25, 0.45, 0.9), "team": 2, "turn_order": 2, "slot": "top_left", "is_observer": false},
+			}
+			NetworkManager.players = players
+			NetworkManager.my_peer_id = 1
+		GameState.setup_initial_position(players)
 
-	GameState.setup_initial_position(players)
 	board_view.refresh()
 
 	NetworkManager.chat_message_received.connect(_on_chat)
 	NetworkManager.move_received.connect(_on_move_received)
 	NetworkManager.turn_changed.connect(_on_turn_changed)
 	NetworkManager.draw_state_changed.connect(_on_draw_state)
+	NetworkManager.state_snapshot_received.connect(_on_snapshot)
 	chat_input.text_submitted.connect(_on_chat_submit)
 	back_btn.pressed.connect(_on_back)
 	fullscreen_btn.pressed.connect(_on_fullscreen)
@@ -52,9 +54,15 @@ func _ready() -> void:
 	_update_turn_ui()
 	_create_badges()
 
+func _on_snapshot(_data: Dictionary) -> void:
+	board_view.refresh()
+	_create_badges()
+	_update_turn_ui()
+	status_label.text = "Состояние восстановлено / State restored"
+
 func _add_extra_ui() -> void:
 	draw_btn = Button.new()
-	draw_btn.text = "Предложить ничью"
+	draw_btn.text = LocaleManager.t("draw")
 	draw_btn.position = Vector2(420, 620)
 	draw_btn.pressed.connect(_on_draw_offer)
 	$UI.add_child(draw_btn)
@@ -80,7 +88,6 @@ func _on_cell_clicked(cell: Vector2i) -> void:
 		return
 	if GameState.turn_player_id != my_id:
 		return
-
 	var piece = GameState.get_piece(cell.x, cell.y)
 	if selected.x >= 0:
 		if cell in board_view.possible_moves:
@@ -105,8 +112,6 @@ func _on_cell_clicked(cell: Vector2i) -> void:
 		AudioManager.play("select")
 
 func _show_promotion_popup() -> void:
-	var popup = load("res://scripts/promotion_popup.gd").new()
-	# promotion_popup is a script extending CanvasLayer — instantiate via script
 	var node = CanvasLayer.new()
 	node.set_script(load("res://scripts/promotion_popup.gd"))
 	add_child(node)
@@ -123,7 +128,6 @@ func _on_move_received(from: Vector2i, to: Vector2i, _sender_id: int, promotion:
 	var piece_copy = piece.duplicate()
 	GameState.set_piece(from.x, from.y, null)
 	board_view.refresh()
-
 	is_animating = true
 	animator.start(from, to, piece_copy, board_view, func():
 		_finish_move(from, to, piece_copy, promotion)
@@ -136,14 +140,12 @@ func _finish_move(from: Vector2i, to: Vector2i, piece: Dictionary, promotion: in
 	board_view.refresh()
 	AudioManager.play_move(result.get("captured", false))
 	is_animating = false
-
 	if result.get("promotion", false):
-		status_label.text = "Превращение!"
+		status_label.text = LocaleManager.t("promotion")
 	elif result.get("castle", false):
-		status_label.text = "Рокировка"
+		status_label.text = "Рокировка / Castling"
 	elif result.get("en_passant", false):
-		status_label.text = "Взятие на проходе"
-
+		status_label.text = "En passant"
 	_check_game_state_after_move(piece.owner)
 	GameState.next_turn()
 	if NetworkManager.is_host or multiplayer.multiplayer_peer == null:
@@ -157,20 +159,19 @@ func _check_game_state_after_move(mover_id: int) -> void:
 		if ChessLogic.is_checkmate(GameState, pid):
 			GameState.set_frozen(pid, true)
 			AudioManager.play_checkmate()
-			status_label.text = "Мат! Игрок заморожен"
+			status_label.text = LocaleManager.t("mate")
 		elif ChessLogic.is_stalemate(GameState, pid):
 			GameState.set_frozen(pid, true)
-			status_label.text = "Пат! Игрок заморожен"
+			status_label.text = LocaleManager.t("stalemate")
 		elif ChessLogic.is_in_check(GameState, pid):
 			AudioManager.play_check()
-			status_label.text = "Шах!"
-
+			status_label.text = LocaleManager.t("check")
 	var team = GameState.get_team(mover_id)
 	if GameState.all_opponents_frozen(team):
-		status_label.text = "Победа команды %d!" % team
+		status_label.text = LocaleManager.t("victory") % team
 		draw_btn.disabled = true
 	if GameState.both_team_stalemated(team):
-		status_label.text = "Ничья (пат команды)"
+		status_label.text = LocaleManager.t("draw_accepted")
 
 func _on_turn_changed(new_id: int) -> void:
 	GameState.turn_player_id = new_id
@@ -182,7 +183,8 @@ func _update_turn_ui() -> void:
 	var name = info.get("name", "?")
 	var frozen = GameState.is_frozen(pid)
 	var color: Color = info.get("color", Color.WHITE)
-	turn_label.text = "Ход: %s%s" % [name, " (заморожен)" if frozen else ""]
+	var frozen_s = " (" + LocaleManager.t("frozen") + ")" if frozen else ""
+	turn_label.text = "%s: %s%s" % [LocaleManager.t("turn"), name, frozen_s]
 	turn_label.add_theme_color_override("font_color", color)
 	_highlight_current_badge(pid)
 
@@ -239,12 +241,10 @@ func _on_draw_offer() -> void:
 
 func _on_draw_state(proposed_team: int, votes: Dictionary, accepted: bool) -> void:
 	if accepted:
-		status_label.text = "Ничья по согласию!"
+		status_label.text = LocaleManager.t("draw_accepted")
 		draw_btn.disabled = true
 	else:
-		status_label.text = "Ничья (команда %d): голоса %d/%d" % [
-			proposed_team, votes.size(), NetworkManager.players.size()
-		]
+		status_label.text = "Draw T%d: %d/%d" % [proposed_team, votes.size(), NetworkManager.players.size()]
 
 func _on_chat(from_id: int, text: String, is_team: bool) -> void:
 	var info = GameState.players_info.get(from_id, NetworkManager.observers.get(from_id, {}))
@@ -261,14 +261,14 @@ func _on_chat_submit(text: String) -> void:
 
 func _on_back() -> void:
 	NetworkManager.leave_game()
+	GameState.game_in_progress = false
 	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
 func _on_fullscreen() -> void:
-	if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN:
-		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
-	else:
-		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	Settings.toggle_fullscreen()
 
 func _on_lang() -> void:
 	LocaleManager.toggle()
 	lang_btn.text = "RU" if LocaleManager.current_locale == "en" else "EN"
+	draw_btn.text = LocaleManager.t("draw")
+	_update_turn_ui()
