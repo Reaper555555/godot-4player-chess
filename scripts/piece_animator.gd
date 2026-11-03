@@ -39,10 +39,10 @@ func _process(delta: float) -> void:
 func _draw() -> void:
 	if not animating and progress <= 0.0:
 		return
-	var t = ease(progress, -1.5)  # slight ease-out
+	var t = ease(progress, -1.5)
 	var pos = from_pos.lerp(to_pos, t)
 	var color: Color = piece_data.get("color", Color.WHITE)
-	var radius = 64.0 * 0.38  # match BoardView CELL_SIZE
+	var radius = 64.0 * 0.38
 	draw_circle(pos + Vector2(2, 3), radius, Color(0, 0, 0, 0.25))
 	draw_circle(pos, radius, color)
 	draw_arc(pos, radius, 0, TAU, 32, color.darkened(0.45), 3.5, true)
