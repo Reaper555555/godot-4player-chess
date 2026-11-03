@@ -1,5 +1,5 @@
 extends Node
-## Global game state — board, pieces, turn order, frozen players, etc.
+## Global game state — board, pieces, turn order, frozen players, en passant, etc.
 
 enum PieceType { PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING }
 enum Slot { TOP_LEFT, BOTTOM_LEFT, TOP_RIGHT, BOTTOM_RIGHT }
@@ -7,7 +7,6 @@ enum Slot { TOP_LEFT, BOTTOM_LEFT, TOP_RIGHT, BOTTOM_RIGHT }
 const BOARD_WIDTH := 16
 const BOARD_HEIGHT := 8
 
-# Slot -> direction of pawns (1 = up/decreasing rank, -1 = down/increasing rank)
 const SLOT_FORWARD := {
 	Slot.TOP_LEFT: 1,
 	Slot.BOTTOM_LEFT: -1,
@@ -15,15 +14,17 @@ const SLOT_FORWARD := {
 	Slot.BOTTOM_RIGHT: -1,
 }
 
-# Slot -> home ranks for pieces (rank 0 is top of board visually? We use rank 0 = top)
-# Standard: bottom player has pieces on ranks 6-7 (if 0=top), top on 0-1.
-
-var current_turn_order: int = 1  # 1..4
+var current_turn_order: int = 1
 var turn_player_id: int = 0
-var frozen_players: Dictionary = {}  # peer_id -> true if checkmated/stalemated
-var board: Array = []  # 16x8, each cell: null or {type, owner_id, color, has_moved}
-var players_info: Dictionary = {}  # peer_id -> full info from lobby
+var frozen_players: Dictionary = {}
+var board: Array = []
+var players_info: Dictionary = {}
 var move_history: Array = []
+var en_passant_target: Vector2i = Vector2i(-1, -1)
+
+# Draw voting: peer_id -> true if accepted
+var draw_votes: Dictionary = {}
+var draw_proposed_by_team: int = -1
 
 func _ready() -> void:
 	_init_empty_board()
@@ -36,9 +37,11 @@ func _init_empty_board() -> void:
 		board[x].resize(BOARD_HEIGHT)
 		for y in BOARD_HEIGHT:
 			board[x][y] = null
+	en_passant_target = Vector2i(-1, -1)
+	draw_votes.clear()
+	draw_proposed_by_team = -1
 
 func setup_initial_position(players: Dictionary) -> void:
-	## players: peer_id -> {slot, color, team, turn_order, name}
 	_init_empty_board()
 	players_info = players.duplicate(true)
 	frozen_players.clear()
@@ -50,7 +53,6 @@ func setup_initial_position(players: Dictionary) -> void:
 		var color: Color = info.get("color", Color.WHITE)
 		_place_full_set(pid, slot, color)
 
-	# Determine first player by lowest turn_order
 	var ordered := []
 	for pid in players:
 		ordered.append({"id": pid, "order": players[pid].get("turn_order", 99)})
@@ -73,27 +75,19 @@ func _place_full_set(owner_id: int, slot: Slot, color: Color) -> void:
 	var base_x := 0 if is_left else 8
 	var pawn_rank := 1 if is_top else 6
 	var back_rank := 0 if is_top else 7
-
-	# Back rank order (same for adjacent, mirrored for opposite as classic)
-	# Classic white (bottom): R N B Q K B N R
-	# Classic black (top):   r n b q k b n r  (files a-h)
-	# For consistency we use the same relative order from left of their half.
 	var back_pieces := [
 		PieceType.ROOK, PieceType.KNIGHT, PieceType.BISHOP,
 		PieceType.QUEEN, PieceType.KING,
 		PieceType.BISHOP, PieceType.KNIGHT, PieceType.ROOK
 	]
-
 	for i in 8:
 		var x = base_x + i
-		# Back rank
 		board[x][back_rank] = {
 			"type": back_pieces[i],
 			"owner": owner_id,
 			"color": color,
 			"has_moved": false
 		}
-		# Pawns
 		board[x][pawn_rank] = {
 			"type": PieceType.PAWN,
 			"owner": owner_id,
@@ -121,7 +115,6 @@ func set_frozen(peer_id: int, frozen: bool) -> void:
 		frozen_players.erase(peer_id)
 
 func next_turn() -> void:
-	# Find next non-frozen player by turn_order
 	var orders := []
 	for pid in players_info:
 		if not is_frozen(pid):
@@ -145,3 +138,96 @@ func get_player_slot(peer_id: int) -> Slot:
 func get_forward_dir(peer_id: int) -> int:
 	var slot = get_player_slot(peer_id)
 	return SLOT_FORWARD.get(slot, -1)
+
+## Apply a validated move, handling castling, en passant, promotion.
+## promotion_type: PieceType or -1 to keep as is / ask later
+func apply_move(from: Vector2i, to: Vector2i, promotion_type: int = -1) -> Dictionary:
+	var piece = get_piece(from.x, from.y)
+	if piece == null:
+		return {}
+	var result := {
+		"captured": false,
+		"castle": false,
+		"en_passant": false,
+		"promotion": false,
+	}
+	var owner_id: int = piece.owner
+	var dir = get_forward_dir(owner_id)
+
+	# En passant capture
+	if piece.type == PieceType.PAWN and to == en_passant_target:
+		var cap_y = to.y - dir
+		set_piece(to.x, cap_y, null)
+		result.en_passant = true
+		result.captured = true
+
+	var captured_piece = get_piece(to.x, to.y)
+	if captured_piece != null:
+		result.captured = true
+
+	# Castling: king moves 2 squares horizontally
+	if piece.type == PieceType.KING and abs(to.x - from.x) == 2 and to.y == from.y:
+		var step = 1 if to.x > from.x else -1
+		# Find rook in that direction on same rank
+		var rook_x = -1
+		for i in range(1, 5):
+			var cx = from.x + i * step
+			var p = get_piece(cx, from.y)
+			if p and p.type == PieceType.ROOK and p.owner == owner_id:
+				rook_x = cx
+				break
+		if rook_x >= 0:
+			var rook = get_piece(rook_x, from.y)
+			set_piece(rook_x, from.y, null)
+			rook.has_moved = true
+			var new_rook_x = to.x - step  # rook lands next to king
+			set_piece(new_rook_x, from.y, rook)
+			result.castle = true
+
+	# Move piece
+	piece.has_moved = true
+	set_piece(to.x, to.y, piece)
+	set_piece(from.x, from.y, null)
+
+	# Update en passant target
+	en_passant_target = Vector2i(-1, -1)
+	if piece.type == PieceType.PAWN and abs(to.y - from.y) == 2:
+		en_passant_target = Vector2i(from.x, from.y + dir)
+
+	# Promotion
+	if piece.type == PieceType.PAWN:
+		var promote_rank = 7 if dir == 1 else 0
+		if to.y == promote_rank:
+			result.promotion = true
+			if promotion_type >= 0:
+				piece.type = promotion_type
+			else:
+				piece.type = PieceType.QUEEN  # default
+
+	move_history.append({"from": from, "to": to, "result": result})
+	return result
+
+func get_team(peer_id: int) -> int:
+	return players_info.get(peer_id, {}).get("team", 0)
+
+func all_opponents_frozen(my_team: int) -> bool:
+	var any_opponent := false
+	for pid in players_info:
+		var t = get_team(pid)
+		if t != my_team:
+			any_opponent = true
+			if not is_frozen(pid):
+				return false
+	return any_opponent
+
+func both_team_stalemated(team: int) -> bool:
+	var members := []
+	for pid in players_info:
+		if get_team(pid) == team:
+			members.append(pid)
+	if members.is_empty():
+		return false
+	for pid in members:
+		if not is_frozen(pid):
+			return false
+	return true
