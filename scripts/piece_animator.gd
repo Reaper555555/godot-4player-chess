@@ -29,7 +29,7 @@ func _process(delta: float) -> void:
 	progress += delta / duration
 	if progress >= 1.0:
 		progress = 1.0
-		animating = false
+		animateing = false
 		hide()
 		animation_finished.emit()
 		if callback.is_valid():
