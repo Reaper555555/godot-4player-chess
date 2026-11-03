@@ -18,12 +18,10 @@ const PRESET_COLORS := [
 	Color(0.95, 0.55, 0.20),
 	Color(0.75, 0.75, 0.80),
 ]
-const BACK_ORDER := [
-	GameState.PieceType.ROOK, GameState.PieceType.KNIGHT, GameState.PieceType.BISHOP,
-	GameState.PieceType.QUEEN, GameState.PieceType.KING,
-	GameState.PieceType.BISHOP, GameState.PieceType.KNIGHT, GameState.PieceType.ROOK,
-]
+# PieceType ints: PAWN=0 KNIGHT=1 BISHOP=2 ROOK=3 QUEEN=4 KING=5
+const BACK_ORDER := [3, 1, 2, 4, 5, 2, 1, 3]
 
+var entry_layer: CenterContainer
 var entry_panel: PanelContainer
 var lobby_root: Control
 var status_label: Label
@@ -43,10 +41,11 @@ var board_preview: Control
 var slots_layer: Control
 var slot_panels: Dictionary = {}
 var color_row: HBoxContainer
+var lobby_status: Label
 
 var my_info := {
 	"name": "Player",
-	"color": PRESET_COLORS[0],
+	"color": Color(0.92, 0.25, 0.22),
 	"team": 1,
 	"turn_order": 1,
 	"slot": "",
@@ -57,6 +56,7 @@ var connected := false
 var _suppress_param := false
 
 func _ready() -> void:
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_build_ui()
 	NetworkManager.lobby_updated.connect(_refresh)
 	NetworkManager.connection_succeeded.connect(_on_connected)
@@ -80,43 +80,38 @@ func _build_ui() -> void:
 
 	var bg = ColorRect.new()
 	bg.color = Color(0.07, 0.07, 0.10)
-	bg.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(bg)
 
-	# ===== ENTRY (centered) =====
+	# ===== ENTRY (centered via CenterContainer) =====
+	entry_layer = CenterContainer.new()
+	entry_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(entry_layer)
+
 	entry_panel = PanelContainer.new()
-	entry_panel.set_anchors_preset(PRESET_CENTER)
-	entry_panel.custom_minimum_size = Vector2(420, 280)
+	entry_panel.custom_minimum_size = Vector2(440, 300)
 	var ep_style = StyleBoxFlat.new()
-	ep_style.bg_color = Color(0.12, 0.12, 0.16)
+	ep_style.bg_color = Color(0.14, 0.14, 0.18)
 	ep_style.set_corner_radius_all(12)
 	ep_style.set_border_width_all(2)
-	ep_style.border_color = Color(0.35, 0.35, 0.45)
+	ep_style.border_color = Color(0.45, 0.45, 0.55)
 	ep_style.content_margin_left = 28
 	ep_style.content_margin_right = 28
 	ep_style.content_margin_top = 24
 	ep_style.content_margin_bottom = 24
 	entry_panel.add_theme_stylebox_override("panel", ep_style)
-	# center with anchors
-	entry_panel.anchor_left = 0.5
-	entry_panel.anchor_right = 0.5
-	entry_panel.anchor_top = 0.5
-	entry_panel.anchor_bottom = 0.5
-	entry_panel.offset_left = -210
-	entry_panel.offset_right = 210
-	entry_panel.offset_top = -150
-	entry_panel.offset_bottom = 150
-	add_child(entry_panel)
+	entry_layer.add_child(entry_panel)
 
 	var ev = VBoxContainer.new()
-	ev.add_theme_constant_override("separation", 12)
+	ev.add_theme_constant_override("separation", 14)
 	ev.alignment = BoxContainer.ALIGNMENT_CENTER
 	entry_panel.add_child(ev)
 
 	var title = Label.new()
 	title.text = "4-Player Chess"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 26)
+	title.add_theme_font_size_override("font_size", 28)
 	title.add_theme_color_override("font_color", Color(0.95, 0.9, 0.55))
 	ev.add_child(title)
 
@@ -124,15 +119,18 @@ func _build_ui() -> void:
 	status_label.text = "Введите ник и создайте / войдите в игру"
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	status_label.add_theme_color_override("font_color", Color(0.85, 0.85, 0.9))
 	ev.add_child(status_label)
 
 	name_edit = LineEdit.new()
 	name_edit.placeholder_text = "Ник"
 	name_edit.text = "Reaper"
+	name_edit.custom_minimum_size = Vector2(0, 32)
 	ev.add_child(name_edit)
 
 	ip_edit = LineEdit.new()
 	ip_edit.placeholder_text = "IP сервера (пусто = 127.0.0.1)"
+	ip_edit.custom_minimum_size = Vector2(0, 32)
 	ev.add_child(ip_edit)
 
 	var btn_row = HBoxContainer.new()
@@ -142,24 +140,29 @@ func _build_ui() -> void:
 
 	host_btn = Button.new()
 	host_btn.text = "Создать игру"
-	host_btn.custom_minimum_size = Vector2(150, 36)
+	host_btn.custom_minimum_size = Vector2(160, 40)
 	host_btn.pressed.connect(_on_host)
 	btn_row.add_child(host_btn)
 
 	join_btn = Button.new()
 	join_btn.text = "Присоединиться"
-	join_btn.custom_minimum_size = Vector2(150, 36)
+	join_btn.custom_minimum_size = Vector2(160, 40)
 	join_btn.pressed.connect(_on_join)
 	btn_row.add_child(join_btn)
 
-	# ===== LOBBY (hidden until connected) =====
+	var back_btn = Button.new()
+	back_btn.text = "← Меню"
+	back_btn.pressed.connect(func(): get_tree().change_scene_to_file("res://scenes/main.tscn"))
+	ev.add_child(back_btn)
+
+	# ===== LOBBY =====
 	lobby_root = Control.new()
-	lobby_root.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	lobby_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	lobby_root.visible = false
 	add_child(lobby_root)
 
 	var margin = MarginContainer.new()
-	margin.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	margin.add_theme_constant_override("margin_left", 12)
 	margin.add_theme_constant_override("margin_right", 12)
 	margin.add_theme_constant_override("margin_top", 10)
@@ -173,8 +176,7 @@ func _build_ui() -> void:
 	var top_bar = HBoxContainer.new()
 	top_bar.add_theme_constant_override("separation", 10)
 	main.add_child(top_bar)
-	var lobby_status = Label.new()
-	lobby_status.name = "LobbyStatus"
+	lobby_status = Label.new()
 	lobby_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lobby_status.add_theme_color_override("font_color", Color(0.95, 0.9, 0.55))
 	top_bar.add_child(lobby_status)
@@ -247,7 +249,7 @@ func _build_ui() -> void:
 	center.add_child(board_preview)
 
 	slots_layer = Control.new()
-	slots_layer.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	slots_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	slots_layer.mouse_filter = Control.MOUSE_FILTER_PASS
 	board_preview.add_child(slots_layer)
 	board_preview.resized.connect(_layout_slots)
@@ -258,7 +260,6 @@ func _build_ui() -> void:
 		slot_panels[key] = p
 		slots_layer.add_child(p)
 
-	# Chat
 	var chat_box = VBoxContainer.new()
 	chat_box.custom_minimum_size = Vector2(0, 100)
 	main.add_child(chat_box)
@@ -280,15 +281,13 @@ func _build_ui() -> void:
 	chat_row.add_child(chat_input)
 
 func _show_entry() -> void:
-	entry_panel.visible = true
+	entry_layer.visible = true
 	lobby_root.visible = false
 
 func _show_lobby() -> void:
-	entry_panel.visible = false
+	entry_layer.visible = false
 	lobby_root.visible = true
-	var ls = lobby_root.find_child("LobbyStatus", true, false) as Label
-	if ls:
-		ls.text = "Выберите свободный слот у угла доски или нажмите «Наблюдать»"
+	lobby_status.text = "Выберите свободный слот у угла доски или «Наблюдать»"
 	_refresh()
 
 func _make_slot_panel(slot_key: String) -> PanelContainer:
@@ -343,14 +342,16 @@ func _make_slot_panel(slot_key: String) -> PanelContainer:
 	return p
 
 func _layout_slots() -> void:
+	if board_preview == null:
+		return
 	var r = board_preview.size
 	if r.x < 10 or r.y < 10:
 		return
 	var positions = {
 		"top_left": Vector2(4, 4),
-		"top_right": Vector2(max(4, r.x - 194), 4),
-		"bottom_left": Vector2(4, max(4, r.y - 114)),
-		"bottom_right": Vector2(max(4, r.x - 194), max(4, r.y - 114)),
+		"top_right": Vector2(maxf(4.0, r.x - 194.0), 4),
+		"bottom_left": Vector2(4, maxf(4.0, r.y - 114.0)),
+		"bottom_right": Vector2(maxf(4.0, r.x - 194.0), maxf(4.0, r.y - 114.0)),
 	}
 	for key in SLOT_KEYS:
 		if slot_panels.has(key):
@@ -360,9 +361,9 @@ func _draw_board() -> void:
 	var r = board_preview.size
 	var margin_x = 210.0
 	var margin_y = 120.0
-	var bw = r.x - margin_x * 2
-	var bh = r.y - margin_y * 2
-	if bw < 20 or bh < 20:
+	var bw = r.x - margin_x * 2.0
+	var bh = r.y - margin_y * 2.0
+	if bw < 20.0 or bh < 20.0:
 		return
 	var cell_w = bw / 16.0
 	var cell_h = bh / 8.0
@@ -371,10 +372,7 @@ func _draw_board() -> void:
 			var light = ((x + y) % 2 == 0)
 			var col = Color(0.90, 0.82, 0.66) if light else Color(0.48, 0.34, 0.22)
 			board_preview.draw_rect(Rect2(margin_x + x * cell_w, margin_y + y * cell_h, cell_w, cell_h), col)
-	board_preview.draw_rect(
-		Rect2(margin_x - 2, margin_y - 2, bw + 4, bh + 4),
-		Color(0.12, 0.09, 0.06), false, 3.0
-	)
+	board_preview.draw_rect(Rect2(margin_x - 2, margin_y - 2, bw + 4, bh + 4), Color(0.12, 0.09, 0.06), false, 3.0)
 
 	var slot_home := {
 		"top_left": {"base_x": 0, "back": 0, "pawn": 1},
@@ -385,30 +383,17 @@ func _draw_board() -> void:
 	for key in SLOT_KEYS:
 		var home = slot_home[key]
 		var owner_info = _player_in_slot(key)
-		var fill: Color
 		var empty := owner_info == null
-		if empty:
-			fill = Color(0.55, 0.55, 0.58)
-		else:
-			fill = owner_info.get("color", Color.WHITE)
+		var fill: Color = Color(0.62, 0.62, 0.65) if empty else owner_info.get("color", Color.WHITE)
 		for i in 8:
 			var cx = home.base_x + i
 			var px = margin_x + (cx + 0.5) * cell_w
-			var size = min(cell_w, cell_h) * 0.85
-			# back rank
+			var size = minf(cell_w, cell_h) * 0.85
 			var py_b = margin_y + (home.back + 0.5) * cell_h
 			var ptype = BACK_ORDER[i]
-			if empty:
-				# striped look: grey fill + dark
-				PieceDraw.draw_piece(board_preview, Vector2(px, py_b), ptype, Color(0.62, 0.62, 0.65), size)
-			else:
-				PieceDraw.draw_piece(board_preview, Vector2(px, py_b), ptype, fill, size)
-			# pawns
+			PieceDraw.draw_piece(board_preview, Vector2(px, py_b), ptype, fill, size)
 			var py_p = margin_y + (home.pawn + 0.5) * cell_h
-			if empty:
-				PieceDraw.draw_piece(board_preview, Vector2(px, py_p), GameState.PieceType.PAWN, Color(0.62, 0.62, 0.65), size)
-			else:
-				PieceDraw.draw_piece(board_preview, Vector2(px, py_p), GameState.PieceType.PAWN, fill, size)
+			PieceDraw.draw_piece(board_preview, Vector2(px, py_p), 0, fill, size)
 
 func _player_in_slot(slot_key: String) -> Variant:
 	for pid in NetworkManager.players:
@@ -416,13 +401,6 @@ func _player_in_slot(slot_key: String) -> Variant:
 		if str(p.get("slot", "")) == slot_key and not p.get("is_observer", false):
 			return p
 	return null
-
-func _pid_in_slot(slot_key: String) -> int:
-	for pid in NetworkManager.players:
-		var p = NetworkManager.players[pid]
-		if str(p.get("slot", "")) == slot_key and not p.get("is_observer", false):
-			return int(pid)
-	return -1
 
 func _on_host() -> void:
 	var err: Error = NetworkManager.host_game()
@@ -464,11 +442,9 @@ func _on_slot_clicked(slot_key: String) -> void:
 		return
 	var occ = _player_in_slot(slot_key)
 	var my_id = NetworkManager.my_peer_id
-	var mine = NetworkManager.players.get(my_id, {})
+	var mine = NetworkManager.players.get(my_id, NetworkManager.players.get(int(my_id), {}))
 	if occ and str(mine.get("slot", "")) != slot_key:
-		var ls = lobby_root.find_child("LobbyStatus", true, false) as Label
-		if ls:
-			ls.text = "Слот занят"
+		lobby_status.text = "Слот занят"
 		return
 	my_info.slot = slot_key
 	my_info.is_observer = false
@@ -476,9 +452,7 @@ func _on_slot_clicked(slot_key: String) -> void:
 	_refresh()
 
 func _on_slot_team(slot_key: String) -> void:
-	if _suppress_param:
-		return
-	if my_info.slot != slot_key:
+	if _suppress_param or my_info.slot != slot_key:
 		return
 	var panel: PanelContainer = slot_panels[slot_key]
 	var ob: OptionButton = panel.find_child("TeamOB", true, false)
@@ -487,9 +461,7 @@ func _on_slot_team(slot_key: String) -> void:
 	_register()
 
 func _on_slot_order(slot_key: String) -> void:
-	if _suppress_param:
-		return
-	if my_info.slot != slot_key:
+	if _suppress_param or my_info.slot != slot_key:
 		return
 	var panel: PanelContainer = slot_panels[slot_key]
 	var ob: OptionButton = panel.find_child("OrderOB", true, false)
@@ -517,9 +489,7 @@ func _on_observe() -> void:
 
 func _on_ready() -> void:
 	if my_info.slot == "" and not my_info.is_observer:
-		var ls = lobby_root.find_child("LobbyStatus", true, false) as Label
-		if ls:
-			ls.text = "Сначала выберите слот или наблюдайте"
+		lobby_status.text = "Сначала выберите слот или наблюдайте"
 		return
 	my_info.ready = not my_info.get("ready", false)
 	ready_btn.text = "Не готов" if my_info.ready else "Готов"
@@ -539,14 +509,14 @@ func _refresh() -> void:
 		var p = NetworkManager.players[pid]
 		var slot = str(p.get("slot", ""))
 		if slot != "" and not p.get("is_observer", false):
-			taken[slot] = {"info": p, "pid": pid}
+			taken[slot] = {"info": p, "pid": int(pid)}
 		elif not p.get("is_observer", false):
 			unassigned_list.add_item("%s" % p.get("name", "?"))
 	for pid in NetworkManager.observers:
 		var p = NetworkManager.observers[pid]
 		unassigned_list.add_item("%s [набл.]" % p.get("name", "?"))
 
-	var my_id = NetworkManager.my_peer_id
+	var my_id = int(NetworkManager.my_peer_id)
 	for key in SLOT_KEYS:
 		var panel: PanelContainer = slot_panels[key]
 		var claim: Button = panel.find_child("ClaimBtn", true, false)
@@ -560,7 +530,7 @@ func _refresh() -> void:
 			var p = entry.info
 			var pid = entry.pid
 			var c: Color = p.get("color", Color.WHITE)
-			var is_mine = (int(pid) == int(my_id))
+			var is_mine = (pid == my_id)
 			st.border_color = c
 			st.bg_color = Color(c.r * 0.2, c.g * 0.2, c.b * 0.2, 0.95)
 			claim.text = SLOT_LABELS[key]
@@ -598,7 +568,7 @@ func _refresh() -> void:
 func _select_id(ob: OptionButton, id: int) -> void:
 	for i in ob.item_count:
 		if ob.get_item_id(i) == id:
-			ob.select(i)
+			o.select(i)
 			return
 	if id >= 1 and id <= ob.item_count:
 		o.select(id - 1)
