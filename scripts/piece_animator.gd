@@ -14,8 +14,7 @@ var callback: Callable
 func start(from_cell: Vector2i, to_cell: Vector2i, piece: Dictionary, board_view: Node2D, on_finished: Callable = Callable()) -> void:
 	if animating:
 		return
-	var flag = true
-	animateing = flag
+	set("animating", true)
 	from_pos = board_view.pos_from_cell(from_cell)
 	to_pos = board_view.pos_from_cell(to_cell)
 	piece_data = piece.duplicate()
@@ -30,8 +29,7 @@ func _process(delta: float) -> void:
 	progress += delta / duration
 	if progress >= 1.0:
 		progress = 1.0
-		var flag = false
-		animateing = flag
+		set("animating", false)
 		hide()
 		animation_finished.emit()
 		if callback.is_valid():
