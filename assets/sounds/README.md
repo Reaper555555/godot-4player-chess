@@ -1,13 +1,22 @@
-# Sounds
+# Sounds (CC0)
 
-Place the following files here (preferably .ogg):
+Generate local placeholder SFX (public domain):
 
-- `move.ogg` — ordinary move
-- `capture.ogg` — capture
-- `check.ogg` — check
-- `checkmate.ogg` — checkmate / freeze
-- `select.ogg` — piece selected
-- `ui_click.ogg` — UI buttons
+```bash
+python3 tools/generate_sounds.py
+```
 
-You can use free CC0 chess sounds from OpenGameArt, Freesound, etc.
-The AudioManager will silently ignore missing files.
+Creates in this folder:
+- `move` — ordinary move
+- `capture`
+- `check`
+- `checkmate`
+- `select`
+- `ui_click`
+
+(`.wav` always; `.ogg` if `ffmpeg` is installed)
+
+You can replace these with any other free sounds (Freesound CC0, OpenGameArt, etc.).
+`AudioManager` loads `.ogg` first, then `.wav`.
+
+License of generated files: **CC0 1.0** (public domain).
